@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 // Official source: https://docs.beets.fi/technicals/subgraphs (Sonic, Balancer).
 // Current deployment of wwazpiPPt5oJMiTNnQ2VjVxKnKakGDuE2FfEZPD4TKj.
 const endpoint = "https://gateway.thegraph.com/api/deployments/id/QmPXaLKDvMMZdjD1ZuMpMSkRjKf8ALLVRtjUpTwWdKSvpQ";
-type Pool = { id: string; address: string; name: string; symbol: string };
+type Pool = { id: string; address: string; name: string; symbol: string; poolType: string };
 type Meta = { deployment: string; hasIndexingErrors: boolean; block: { number: number; hash: string } };
 
 async function query(queryText: string, key: string): Promise<Record<string, unknown>> {
@@ -46,7 +46,7 @@ const service: ITagService = {
       // Pool IDs are unique; there is no unique sequential pool field. Use ID fallback with id_gt.
       const data = await query(`{ _meta(${atBlock}) { deployment hasIndexingErrors block { number hash } }
         pools(first: 1000, orderBy: id, orderDirection: asc, where: { id_gt: ${JSON.stringify(cursor)} }, ${atBlock})
-        { id address name symbol } }`, apiKey);
+        { id address name symbol poolType } }`, apiKey);
       const observed = meta(data._meta);
       if (observed.block.hash !== initial.block.hash || observed.block.number !== initial.block.number) throw new Error("Source block changed");
       if (!Array.isArray(data.pools) || data.pools.length > 1000) throw new Error("Invalid pool page");
@@ -60,6 +60,13 @@ const service: ITagService = {
         if (!/^0x[0-9a-f]{40}$/i.test(pool.address) || /^0x0{40}$/i.test(pool.address) ||
             typeof pool.name !== "string" || !pool.name.trim() || typeof pool.symbol !== "string" || !pool.symbol.trim() ||
             /[\u0000-\u001f\u007f-\u009f]/u.test(pool.name + pool.symbol)) throw new Error("Invalid pool metadata");
+        // Beets explicitly attributes E-CLPs to Gyroscope. Gyroscope also
+        // documents its 3-CLPs. Preserve that additional project association:
+        // https://docs.beets.fi/beets-dex/pools
+        // https://docs.gyro.finance/pools/concentrated-liquidity-pools.html
+        // A new or missing pool type needs qualification rather than a guess.
+        if (!["Weighted", "ComposableStable", "GyroE", "Gyro3"].includes(pool.poolType)) throw new Error("Unqualified pool type");
+        const gyroscope = pool.poolType === "GyroE" || pool.poolType === "Gyro3" ? " Gyroscope" : "";
         const address = pool.address.toLowerCase();
         if (!pool.id.startsWith(address)) throw new Error("Pool ID and address disagree");
         // PoolRegistry encodes address (20 bytes), specialization (2), then
@@ -81,7 +88,7 @@ const service: ITagService = {
         const label = (characters.length > available ? characters.slice(0, available - 3).join("") + "..." : name) + suffix;
         tags.push({ "Contract Address": `eip155:146:${address}`, "Project Name": "Beets",
           "Public Name Tag": label, "UI/Website Link": "https://beets.fi",
-          "Public Note": `Beets V2 (Balancer V2) liquidity pool and pool share token on Sonic. Vault registration number: ${registration}. Pool ID: ${pool.id}. Symbol: ${pool.symbol}.` });
+          "Public Note": `Beets V2 (Balancer V2)${gyroscope} liquidity pool and pool share token on Sonic. Vault registration number: ${registration}. Pool ID: ${pool.id}. Symbol: ${pool.symbol}.` });
       }
       if (pools.length < 1000) break;
     }

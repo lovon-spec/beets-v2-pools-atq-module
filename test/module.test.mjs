@@ -10,7 +10,7 @@ const deployment = 'QmPXaLKDvMMZdjD1ZuMpMSkRjKf8ALLVRtjUpTwWdKSvpQ';
 const meta = { deployment, hasIndexingErrors: false, block: { number: 100, hash: '0x' + 'ab'.repeat(32) } };
 const pool = (n, name = 'Published pool') => {
   const address = '0x' + n.toString(16).padStart(40, '0');
-  return { address, id: address + '0002' + n.toString(16).padStart(20, '0'), name, symbol: 'BPT' };
+  return { address, id: address + '0002' + n.toString(16).padStart(20, '0'), name, symbol: 'BPT', poolType: 'Weighted' };
 };
 async function run(pools, transform = x => x, chain = '146') {
   let calls = 0;
@@ -50,6 +50,25 @@ test('registration zero and noncontiguous nonces are retained rather than renumb
   const rows = await run([a, b]);
   assert.equal(rows[0]['Public Name Tag'], 'Published pool (V2 #0)');
   assert.equal(rows[1]['Public Name Tag'], 'Published pool (V2 #900)');
+});
+test('both Gyroscope pool families retain Beets, Balancer and Gyroscope project attribution', async () => {
+  for (const poolType of ['GyroE', 'Gyro3']) {
+    const [row] = await run([{ ...pool(1), poolType }]);
+    for (const project of ['Beets', 'Balancer', 'Gyroscope']) assert.ok(row['Public Note'].includes(project));
+    assert.ok(row['Public Note'].includes('token'));
+  }
+});
+test('non-Gyroscope types do not receive an unsupported Gyroscope attribution', async () => {
+  for (const poolType of ['Weighted', 'ComposableStable']) {
+    const [row] = await run([{ ...pool(1), poolType }]);
+    assert.ok(!row['Public Note'].includes('Gyroscope'));
+  }
+});
+test('unknown or absent pool types fail the whole result, including on later pages', async () => {
+  for (const poolType of [undefined, null, 'new-pool-family']) await assert.rejects(run([{ ...pool(1), poolType }]), /Unqualified pool type/);
+  const pools = Array.from({ length: 1001 }, (_, i) => pool(i + 1));
+  pools.at(-1).poolType = 'unqualified';
+  await assert.rejects(run(pools), /Unqualified pool type/);
 });
 test('duplicate registration numbers and invalid specialization fail the whole result', async () => {
   const a = pool(1), b = pool(2);
