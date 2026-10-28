@@ -16,8 +16,12 @@ async function query(queryText: string, key: string): Promise<Record<string, unk
       body: JSON.stringify({ query: queryText }), signal: controller.signal,
     });
     if (!response.ok) throw new Error(`Graph HTTP ${response.status}`);
-    const result = await response.json() as { data?: Record<string, unknown>; errors?: unknown[] };
-    if (!result.data || result.errors?.length) throw new Error("Graph response is incomplete or contains errors");
+    const result = await response.json() as { data?: Record<string, unknown>; errors?: unknown };
+    if (!result || typeof result !== "object" || Array.isArray(result) || !result.data ||
+        typeof result.data !== "object" || Array.isArray(result.data) ||
+        (result.errors !== undefined && (!Array.isArray(result.errors) || result.errors.length !== 0))) {
+      throw new Error("Graph response is incomplete or contains errors");
+    }
     return result.data;
   } finally { clearTimeout(timer); }
 }
@@ -36,7 +40,7 @@ const service: ITagService = {
     if (typeof apiKey !== "string" || !apiKey.trim()) throw new Error("A Graph API key is required");
     const initial = meta((await query("{ _meta { deployment hasIndexingErrors block { number hash } } }", apiKey))._meta);
     const atBlock = `block: { hash: ${JSON.stringify(initial.block.hash)} }`;
-    const tags: ContractTag[] = [], addresses = new Set<string>(), labels = new Set<string>();
+    const tags: ContractTag[] = [], addresses = new Set<string>();
     let cursor = "";
     for (;;) {
       // Pool IDs are unique; there is no unique sequential pool field. Use ID fallback with id_gt.
@@ -49,20 +53,25 @@ const service: ITagService = {
       const pools = data.pools as Pool[];
       if (!pools.length) break;
       for (const pool of pools) {
-        if (typeof pool.id !== "string" || pool.id <= cursor) throw new Error("Pool cursor did not advance");
+        if (!pool || typeof pool.id !== "string" || !/^0x[0-9a-f]{64}$/.test(pool.id) || pool.id <= cursor) {
+          throw new Error("Invalid pool ID or pool cursor did not advance");
+        }
         cursor = pool.id;
         if (!/^0x[0-9a-f]{40}$/i.test(pool.address) || /^0x0{40}$/i.test(pool.address) ||
-            typeof pool.name !== "string" || !pool.name.trim() || typeof pool.symbol !== "string") throw new Error("Invalid pool metadata");
+            typeof pool.name !== "string" || !pool.name.trim() || typeof pool.symbol !== "string" || !pool.symbol.trim() ||
+            /[\u0000-\u001f\u007f-\u009f]/u.test(pool.name + pool.symbol)) throw new Error("Invalid pool metadata");
         const address = pool.address.toLowerCase();
+        if (!pool.id.startsWith(address)) throw new Error("Pool ID and address disagree");
         if (addresses.has(address)) throw new Error("Duplicate pool address");
         addresses.add(address);
         const name = pool.name.trim().replace(/\s+/g, " ");
-        const label = (name.length > 34 ? name.slice(0, 31) + "..." : name) + ` (${address.slice(2, 12)})`;
-        if (labels.has(label)) throw new Error("Ambiguous pool name");
-        labels.add(label);
+        // Preserve the published pool name. ATQ permits ellipsis for length;
+        // repeated official names on distinct addresses need no invented suffix.
+        const characters = Array.from(name);
+        const label = characters.length > 50 ? characters.slice(0, 47).join("") + "..." : name;
         tags.push({ "Contract Address": `eip155:146:${address}`, "Project Name": "Beets",
           "Public Name Tag": label, "UI/Website Link": "https://beets.fi",
-          "Public Note": `Beets V2 liquidity pool and pool share token on Sonic. Pool ID: ${pool.id}. Symbol: ${pool.symbol}.` });
+          "Public Note": `Beets V2 (Balancer V2) liquidity pool and pool share token on Sonic. Pool ID: ${pool.id}. Symbol: ${pool.symbol}.` });
       }
       if (pools.length < 1000) break;
     }
