@@ -10,7 +10,7 @@ const deployment = 'QmPXaLKDvMMZdjD1ZuMpMSkRjKf8ALLVRtjUpTwWdKSvpQ';
 const meta = { deployment, hasIndexingErrors: false, block: { number: 100, hash: '0x' + 'ab'.repeat(32) } };
 const pool = (n, name = 'Published pool') => {
   const address = '0x' + n.toString(16).padStart(40, '0');
-  return { address, id: address + '00'.repeat(12), name, symbol: 'BPT' };
+  return { address, id: address + '0002' + n.toString(16).padStart(20, '0'), name, symbol: 'BPT' };
 };
 async function run(pools, transform = x => x, chain = '146') {
   let calls = 0;
@@ -20,7 +20,8 @@ async function run(pools, transform = x => x, chain = '146') {
     assert.equal(options.headers.Authorization, 'Bearer fixture-key');
     const query = JSON.parse(options.body).query; calls++;
     if (calls > 1) assert.ok(query.includes(meta.block.hash));
-    const data = calls === 1 ? { _meta: meta } : { _meta: meta, pools };
+    const cursor = calls > 1 ? JSON.parse(/id_gt:\s*("(?:[^"\\]|\\.)*")/u.exec(query)[1]) : '';
+    const data = calls === 1 ? { _meta: meta } : { _meta: meta, pools: pools.filter(p => p.id > cursor).slice(0, 1000) };
     return { ok: true, json: async () => transform({ data }, calls) };
   };
   const dependency = new vm.SyntheticModule(['default'], function () { this.setExport('default', fetch); }, { context });
@@ -29,17 +30,38 @@ async function run(pools, transform = x => x, chain = '146') {
   await module.evaluate();
   return JSON.parse(JSON.stringify(await module.namespace.returnTags(chain, 'fixture-key')));
 }
-test('retains official common names, exact pool IDs and token role without generated suffixes', async () => {
+test('distinguishes shared official names with actual Vault registration numbers', async () => {
   const rows = await run([pool(1), pool(2)]);
-  assert.equal(rows.length, 2); assert.equal(rows[0]['Public Name Tag'], 'Published pool');
-  assert.equal(rows[1]['Public Name Tag'], 'Published pool');
+  assert.equal(rows.length, 2); assert.equal(rows[0]['Public Name Tag'], 'Published pool (V2 #1)');
+  assert.equal(rows[1]['Public Name Tag'], 'Published pool (V2 #2)');
   assert.ok(rows[0]['Public Note'].includes('Beets V2 (Balancer V2) liquidity pool and pool share token'));
   assert.ok(rows[0]['Public Note'].includes(pool(1).id));
+  assert.ok(rows[0]['Public Note'].includes('Vault registration number: 1.'));
 });
 test('truncates source names to 50 Unicode characters with ellipsis', async () => {
   const [row] = await run([pool(1, '🎵'.repeat(51))]);
   assert.equal(Array.from(row['Public Name Tag']).length, 50);
-  assert.equal(row['Public Name Tag'], '🎵'.repeat(47) + '...');
+  assert.equal(row['Public Name Tag'], '🎵'.repeat(39) + '... (V2 #1)');
+});
+test('registration zero and noncontiguous nonces are retained rather than renumbered', async () => {
+  const a = pool(1), b = pool(2);
+  a.id = a.address + '0000' + '0'.repeat(20);
+  b.id = b.address + '0001' + (900n).toString(16).padStart(20, '0');
+  const rows = await run([a, b]);
+  assert.equal(rows[0]['Public Name Tag'], 'Published pool (V2 #0)');
+  assert.equal(rows[1]['Public Name Tag'], 'Published pool (V2 #900)');
+});
+test('duplicate registration numbers and invalid specialization fail the whole result', async () => {
+  const a = pool(1), b = pool(2);
+  await assert.rejects(run([a, { ...b, id: b.address + a.id.slice(42) }]), /Duplicate Vault registration/);
+  await assert.rejects(run([{ ...a, id: a.address + '0003' + a.id.slice(-20) }]), /specialization/);
+});
+test('traverses 1001 source pools and rejects a later page failure without partial output', async () => {
+  const pools = Array.from({ length: 1001 }, (_, i) => pool(i + 1));
+  const rows = await run(pools);
+  assert.equal(rows.length, 1001);
+  assert.equal(rows.at(-1)['Public Name Tag'], 'Published pool (V2 #1001)');
+  await assert.rejects(run(pools, (x, n) => n === 3 ? { ...x, errors: ['page failed'] } : x), /incomplete or contains errors/);
 });
 test('rejects malformed Graph errors instead of returning plausible partial data', async () => {
   for (const errors of [{ length: 0 }, null, ['unavailable']]) {

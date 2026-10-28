@@ -40,7 +40,7 @@ const service: ITagService = {
     if (typeof apiKey !== "string" || !apiKey.trim()) throw new Error("A Graph API key is required");
     const initial = meta((await query("{ _meta { deployment hasIndexingErrors block { number hash } } }", apiKey))._meta);
     const atBlock = `block: { hash: ${JSON.stringify(initial.block.hash)} }`;
-    const tags: ContractTag[] = [], addresses = new Set<string>();
+    const tags: ContractTag[] = [], addresses = new Set<string>(), registrations = new Set<string>();
     let cursor = "";
     for (;;) {
       // Pool IDs are unique; there is no unique sequential pool field. Use ID fallback with id_gt.
@@ -62,16 +62,26 @@ const service: ITagService = {
             /[\u0000-\u001f\u007f-\u009f]/u.test(pool.name + pool.symbol)) throw new Error("Invalid pool metadata");
         const address = pool.address.toLowerCase();
         if (!pool.id.startsWith(address)) throw new Error("Pool ID and address disagree");
+        // PoolRegistry encodes address (20 bytes), specialization (2), then
+        // the Vault's incrementing registration nonce (10). This is a source
+        // identifier, not this query's row number or an address abbreviation.
+        // https://github.com/balancer/balancer-v2-monorepo/blob/e91a2b643a49856f51a648d175667c1b48cf3377/pkg/vault/contracts/PoolRegistry.sol
+        if (BigInt("0x" + pool.id.slice(42, 46)) > 2n) throw new Error("Invalid pool specialization");
+        const registration = BigInt("0x" + pool.id.slice(-20)).toString();
+        if (registrations.has(registration)) throw new Error("Duplicate Vault registration number");
+        registrations.add(registration);
         if (addresses.has(address)) throw new Error("Duplicate pool address");
         addresses.add(address);
         const name = pool.name.trim().replace(/\s+/g, " ");
-        // Preserve the published pool name. ATQ permits ellipsis for length;
-        // repeated official names on distinct addresses need no invented suffix.
+        // Preserve the published pool name, using ATQ's explicit ellipsis
+        // exception if necessary. The actual Vault registration distinguishes
+        // repeated official names and remains independent of source ordering.
         const characters = Array.from(name);
-        const label = characters.length > 50 ? characters.slice(0, 47).join("") + "..." : name;
+        const suffix = ` (V2 #${registration})`, available = 50 - suffix.length;
+        const label = (characters.length > available ? characters.slice(0, available - 3).join("") + "..." : name) + suffix;
         tags.push({ "Contract Address": `eip155:146:${address}`, "Project Name": "Beets",
           "Public Name Tag": label, "UI/Website Link": "https://beets.fi",
-          "Public Note": `Beets V2 (Balancer V2) liquidity pool and pool share token on Sonic. Pool ID: ${pool.id}. Symbol: ${pool.symbol}.` });
+          "Public Note": `Beets V2 (Balancer V2) liquidity pool and pool share token on Sonic. Vault registration number: ${registration}. Pool ID: ${pool.id}. Symbol: ${pool.symbol}.` });
       }
       if (pools.length < 1000) break;
     }

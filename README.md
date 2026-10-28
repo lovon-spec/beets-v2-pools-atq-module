@@ -4,7 +4,7 @@ ATQ module for Beets V2 pool token contracts on Sonic (146). Source: the Balance
 
 Run `yarn build`; import `returnTags` from `dist/main.mjs` and pass decimal chain ID and a Graph API key. Unsupported chains, missing data, Graph errors, inconsistent pages and duplicate pool addresses fail the whole call.
 
-Public names use the source pool names, with ellipsis only beyond 50 Unicode characters. Repeated official names on different contract addresses are retained. The public note states the Beets / Balancer V2 pool share token role, pool ID and symbol.
+Public names preserve the source pool name and add `(V2 #n)`, where `n` is the Vault registration nonce encoded in the last ten bytes of the source pool ID. This distinguishes instances sharing an official pool name without assigning query-order numbers. The Vault's PoolRegistry uses an increasing nonce; see https://github.com/balancer/balancer-v2-monorepo/blob/e91a2b643a49856f51a648d175667c1b48cf3377/pkg/vault/contracts/PoolRegistry.sol . ATQ's explicit ellipsis exception is used when the complete name plus qualifier would exceed 50 characters. The note states the Beets / Balancer V2 share-token role, registration number, full pool ID and symbol. Preparation must independently match every source pool ID to the deployed pool and Vault registration.
 
 Run `node --experimental-vm-modules --test test/module.test.mjs` for the offline response tests.
 
