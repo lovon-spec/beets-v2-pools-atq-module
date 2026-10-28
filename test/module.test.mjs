@@ -8,9 +8,9 @@ const source = await readFile(new URL('../src/main.mts', import.meta.url), 'utf8
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
 const deployment = 'QmPXaLKDvMMZdjD1ZuMpMSkRjKf8ALLVRtjUpTwWdKSvpQ';
 const meta = { deployment, hasIndexingErrors: false, block: { number: 100, hash: '0x' + 'ab'.repeat(32) } };
-const pool = (n, name = 'Published pool') => {
+const pool = (n, name = 'Published pool ' + n) => {
   const address = '0x' + n.toString(16).padStart(40, '0');
-  return { address, id: address + '0002' + n.toString(16).padStart(20, '0'), name, symbol: 'BPT', poolType: 'Weighted' };
+  return { address, id: address + '0002' + n.toString(16).padStart(20, '0'), name, symbol: 'BPT' + n, poolType: 'Weighted' };
 };
 async function run(pools, transform = x => x, chain = '146') {
   let calls = 0;
@@ -30,26 +30,52 @@ async function run(pools, transform = x => x, chain = '146') {
   await module.evaluate();
   return JSON.parse(JSON.stringify(await module.namespace.returnTags(chain, 'fixture-key')));
 }
-test('distinguishes shared official names with actual Vault registration numbers', async () => {
-  const rows = await run([pool(1), pool(2)]);
-  assert.equal(rows.length, 2); assert.equal(rows[0]['Public Name Tag'], 'Published pool (V2 #1)');
-  assert.equal(rows[1]['Public Name Tag'], 'Published pool (V2 #2)');
-  assert.ok(rows[0]['Public Note'].includes('Beets V2 (Balancer V2) liquidity pool and pool share token'));
+test('uses published names, falling back to official symbols for shared pool names', async () => {
+  const rows = await run([pool(1, 'Shared name'), pool(2, 'Shared name')]);
+  assert.equal(rows.length, 2); assert.equal(rows[0]['Public Name Tag'], 'BPT1 (V2)');
+  assert.equal(rows[1]['Public Name Tag'], 'BPT2 (V2)');
   assert.ok(rows[0]['Public Note'].includes(pool(1).id));
   assert.ok(rows[0]['Public Note'].includes('Vault registration number: 1.'));
 });
-test('truncates source names to 50 Unicode characters with ellipsis', async () => {
+test('prefers a distinct published name even if its symbol is shared', async () => {
+  const rows = await run([{ ...pool(1), symbol: 'BPT' }, { ...pool(2), symbol: 'BPT' }]);
+  assert.deepEqual(rows.map(r => r['Public Name Tag']), ['Published pool 1 (V2)', 'Published pool 2 (V2)']);
+});
+test('omits instances whose name AND symbol fail to distinguish source addresses', async () => {
+  const rows = await run([{ ...pool(1, 'Shared'), symbol: 'BPT' }, { ...pool(2, 'Shared'), symbol: 'BPT' }, pool(3)]);
+  assert.equal(rows.length, 1); assert.equal(rows[0]['Contract Address'], 'eip155:146:' + pool(3).address);
+});
+test('collision checks include aliases not selected as the peers public name', async () => {
+  const rows = await run([{ ...pool(1, 'Other name'), symbol: 'Alias' }, { ...pool(2, 'Alias'), symbol: 'Distinct' }]);
+  assert.deepEqual(rows.map(r => r['Public Name Tag']), ['Other name (V2)', 'Distinct (V2)']);
+});
+test('collision keys cover casing and compatibility Unicode without rewriting published labels', async () => {
+  const rows = await run([{ ...pool(1, 'ALIAS'), symbol: 'First' }, { ...pool(2, 'ＡＬＩＡＳ'), symbol: 'Second' }]);
+  assert.deepEqual(rows.map(r => r['Public Name Tag']), ['First (V2)', 'Second (V2)']);
+});
+test('truncates source names to 50 Unicode characters and resolves truncation collisions with symbols', async () => {
   const [row] = await run([pool(1, '🎵'.repeat(51))]);
   assert.equal(Array.from(row['Public Name Tag']).length, 50);
-  assert.equal(row['Public Name Tag'], '🎵'.repeat(39) + '... (V2 #1)');
+  assert.equal(row['Public Name Tag'], '🎵'.repeat(42) + '... (V2)');
+  const rows = await run([pool(1, 'x'.repeat(51)), pool(2, 'x'.repeat(50) + 'y')]);
+  assert.deepEqual(rows.map(r => r['Public Name Tag']), ['BPT1 (V2)', 'BPT2 (V2)']);
 });
-test('registration zero and noncontiguous nonces are retained rather than renumbered', async () => {
+test('markdown aliases cannot become labels, and failure of both aliases omits the row', async () => {
+  const rows = await run([pool(1, '*Emphasis*'), { ...pool(2, '[link](https://example.org)'), symbol: '`code`' }]);
+  assert.equal(rows.length, 1); assert.equal(rows[0]['Public Name Tag'], 'BPT1 (V2)');
+});
+test('markdown in a note symbol excludes the row even if its name is usable', async () => {
+  const rows = await run([{ ...pool(1), symbol: '*markup*' }, pool(2)]);
+  assert.equal(rows.length, 1); assert.equal(rows[0]['Contract Address'], 'eip155:146:' + pool(2).address);
+});
+test('registration zero and noncontiguous nonces remain note facts, never public name aliases', async () => {
   const a = pool(1), b = pool(2);
   a.id = a.address + '0000' + '0'.repeat(20);
   b.id = b.address + '0001' + (900n).toString(16).padStart(20, '0');
   const rows = await run([a, b]);
-  assert.equal(rows[0]['Public Name Tag'], 'Published pool (V2 #0)');
-  assert.equal(rows[1]['Public Name Tag'], 'Published pool (V2 #900)');
+  assert.equal(rows[0]['Public Name Tag'], 'Published pool 1 (V2)');
+  assert.ok(rows[0]['Public Note'].includes('registration number: 0.'));
+  assert.ok(rows[1]['Public Note'].includes('registration number: 900.'));
 });
 test('both Gyroscope pool families retain Beets, Balancer and Gyroscope project attribution', async () => {
   for (const poolType of ['GyroE', 'Gyro3']) {
@@ -79,8 +105,15 @@ test('traverses 1001 source pools and rejects a later page failure without parti
   const pools = Array.from({ length: 1001 }, (_, i) => pool(i + 1));
   const rows = await run(pools);
   assert.equal(rows.length, 1001);
-  assert.equal(rows.at(-1)['Public Name Tag'], 'Published pool (V2 #1001)');
+  assert.equal(rows.at(-1)['Public Name Tag'], 'Published pool 1001 (V2)');
   await assert.rejects(run(pools, (x, n) => n === 3 ? { ...x, errors: ['page failed'] } : x), /incomplete or contains errors/);
+});
+test('a collision on the second page changes the first pages alias choice', async () => {
+  const pools = Array.from({ length: 1001 }, (_, i) => pool(i + 1));
+  pools[0].name = 'Same official name'; pools[1000].name = 'Same official name';
+  const rows = await run(pools);
+  assert.equal(rows[0]['Public Name Tag'], 'BPT1 (V2)');
+  assert.equal(rows.at(-1)['Public Name Tag'], 'BPT1001 (V2)');
 });
 test('rejects malformed Graph errors instead of returning plausible partial data', async () => {
   for (const errors of [{ length: 0 }, null, ['unavailable']]) {

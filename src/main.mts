@@ -40,7 +40,7 @@ const service: ITagService = {
     if (typeof apiKey !== "string" || !apiKey.trim()) throw new Error("A Graph API key is required");
     const initial = meta((await query("{ _meta { deployment hasIndexingErrors block { number hash } } }", apiKey))._meta);
     const atBlock = `block: { hash: ${JSON.stringify(initial.block.hash)} }`;
-    const tags: ContractTag[] = [], addresses = new Set<string>(), registrations = new Set<string>();
+    const allPools: Pool[] = [], addresses = new Set<string>(), registrations = new Set<string>();
     let cursor = "";
     for (;;) {
       // Pool IDs are unique; there is no unique sequential pool field. Use ID fallback with id_gt.
@@ -66,7 +66,6 @@ const service: ITagService = {
         // https://docs.gyro.finance/pools/concentrated-liquidity-pools.html
         // A new or missing pool type needs qualification rather than a guess.
         if (!["Weighted", "ComposableStable", "GyroE", "Gyro3"].includes(pool.poolType)) throw new Error("Unqualified pool type");
-        const gyroscope = pool.poolType === "GyroE" || pool.poolType === "Gyro3" ? " Gyroscope" : "";
         const address = pool.address.toLowerCase();
         if (!pool.id.startsWith(address)) throw new Error("Pool ID and address disagree");
         // PoolRegistry encodes address (20 bytes), specialization (2), then
@@ -79,18 +78,47 @@ const service: ITagService = {
         registrations.add(registration);
         if (addresses.has(address)) throw new Error("Duplicate pool address");
         addresses.add(address);
-        const name = pool.name.trim().replace(/\s+/g, " ");
-        // Preserve the published pool name, using ATQ's explicit ellipsis
-        // exception if necessary. The actual Vault registration distinguishes
-        // repeated official names and remains independent of source ordering.
-        const characters = Array.from(name);
-        const suffix = ` (V2 #${registration})`, available = 50 - suffix.length;
-        const label = (characters.length > available ? characters.slice(0, available - 3).join("") + "..." : name) + suffix;
-        tags.push({ "Contract Address": `eip155:146:${address}`, "Project Name": "Beets",
-          "Public Name Tag": label, "UI/Website Link": "https://beets.fi",
-          "Public Note": `Beets V2 (Balancer V2)${gyroscope} liquidity pool and pool share token on Sonic. Vault registration number: ${registration}. Pool ID: ${pool.id}. Symbol: ${pool.symbol}.` });
+        allPools.push(pool);
       }
       if (pools.length < 1000) break;
+    }
+    const markdown = (text: string): boolean => /`|\[[^\]]*\]\([^)]*\)|\*[^*]+\*/u.test(text);
+    const officialLabel = (text: string): string | null => {
+      const name = text.trim().replace(/\s+/gu, " ");
+      if (markdown(name)) return null;
+      const chars = Array.from(name);
+      return (chars.length > 45 ? chars.slice(0, 42).join("") + "..." : name) + " (V2)";
+    };
+    const key = (text: string): string => text.normalize("NFKC").toLowerCase();
+    // Check aliases of ALL source pools, including pools later omitted. A
+    // collision cannot be hidden by preferring a different label on its peer.
+    const owners = new Map<string, Set<string>>();
+    for (const pool of allPools) for (const raw of [pool.name, pool.symbol]) {
+      const label = officialLabel(raw);
+      if (label !== null) {
+        const addresses = owners.get(key(label)) ?? new Set<string>();
+        addresses.add(pool.address.toLowerCase()); owners.set(key(label), addresses);
+      }
+    }
+    const tags: ContractTag[] = [];
+    for (const pool of allPools) {
+      // ATR requires official names and distinguishable instances. Use the
+      // published name first, or its official token symbol if only that alias
+      // differentiates it. If neither source alias can yield an unambiguous,
+      // markdown-free <=50-character label, skip this invalid-output subset
+      // under ATQ's explicit invalid-entry exception. Never invent an instance
+      // number or truncate the address to construct a new name.
+      // The raw symbol is also emitted in the note: markdown there makes
+      // this row invalid even if its name alone could supply a valid label.
+      if (markdown(pool.symbol)) continue;
+      const label = [pool.name, pool.symbol].map(officialLabel).find(label =>
+        label !== null && owners.get(key(label))?.size === 1);
+      if (!label) continue;
+      const registration = BigInt("0x" + pool.id.slice(-20)).toString();
+      const gyroscope = pool.poolType === "GyroE" || pool.poolType === "Gyro3" ? " Gyroscope" : "";
+      tags.push({ "Contract Address": `eip155:146:${pool.address.toLowerCase()}`, "Project Name": "Beets",
+        "Public Name Tag": label, "UI/Website Link": "https://beets.fi",
+        "Public Note": `Beets V2 (Balancer V2)${gyroscope} liquidity pool and pool share token on Sonic. Vault registration number: ${registration}. Pool ID: ${pool.id}. Symbol: ${pool.symbol}.` });
     }
     return tags;
   },
