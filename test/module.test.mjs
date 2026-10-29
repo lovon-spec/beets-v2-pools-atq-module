@@ -30,10 +30,10 @@ async function run(pools, transform = x => x, chain = '146') {
   await module.evaluate();
   return JSON.parse(JSON.stringify(await module.namespace.returnTags(chain, 'fixture-key')));
 }
-test('uses published names, falling back to official symbols for shared pool names', async () => {
+test('retains shared official names at every distinct contract address', async () => {
   const rows = await run([pool(1, 'Shared name'), pool(2, 'Shared name')]);
-  assert.equal(rows.length, 2); assert.equal(rows[0]['Public Name Tag'], 'BPT1 (V2)');
-  assert.equal(rows[1]['Public Name Tag'], 'BPT2 (V2)');
+  assert.equal(rows.length, 2); assert.equal(rows[0]['Public Name Tag'], 'Shared name (V2)');
+  assert.equal(rows[1]['Public Name Tag'], 'Shared name (V2)');
   assert.ok(rows[0]['Public Note'].includes(pool(1).id));
   assert.ok(rows[0]['Public Note'].includes('Vault registration number: 1.'));
 });
@@ -41,17 +41,17 @@ test('prefers a distinct published name even if its symbol is shared', async () 
   const rows = await run([{ ...pool(1), symbol: 'BPT' }, { ...pool(2), symbol: 'BPT' }]);
   assert.deepEqual(rows.map(r => r['Public Name Tag']), ['Published pool 1 (V2)', 'Published pool 2 (V2)']);
 });
-test('omits instances whose name AND symbol fail to distinguish source addresses', async () => {
+test('keeps every source row when both official aliases are shared', async () => {
   const rows = await run([{ ...pool(1, 'Shared'), symbol: 'BPT' }, { ...pool(2, 'Shared'), symbol: 'BPT' }, pool(3)]);
-  assert.equal(rows.length, 1); assert.equal(rows[0]['Contract Address'], 'eip155:146:' + pool(3).address);
+  assert.equal(rows.length, 3); assert.deepEqual(rows.map(r => r['Public Name Tag']), ['Shared (V2)', 'Shared (V2)', 'Published pool 3 (V2)']);
 });
-test('collision checks include aliases not selected as the peers public name', async () => {
+test('a peers unused exact alias does not suppress a published name', async () => {
   const rows = await run([{ ...pool(1, 'Other name'), symbol: 'Alias' }, { ...pool(2, 'Alias'), symbol: 'Distinct' }]);
-  assert.deepEqual(rows.map(r => r['Public Name Tag']), ['Other name (V2)', 'Distinct (V2)']);
+  assert.deepEqual(rows.map(r => r['Public Name Tag']), ['Other name (V2)', 'Alias (V2)']);
 });
-test('collision keys cover casing and compatibility Unicode without rewriting published labels', async () => {
+test('shared compatible names preserve their published spelling', async () => {
   const rows = await run([{ ...pool(1, 'ALIAS'), symbol: 'First' }, { ...pool(2, 'ＡＬＩＡＳ'), symbol: 'Second' }]);
-  assert.deepEqual(rows.map(r => r['Public Name Tag']), ['First (V2)', 'Second (V2)']);
+  assert.deepEqual(rows.map(r => r['Public Name Tag']), ['ALIAS (V2)', 'ＡＬＩＡＳ (V2)']);
 });
 test('truncates source names to 50 Unicode characters and resolves truncation collisions with symbols', async () => {
   const [row] = await run([pool(1, '🎵'.repeat(51))]);
@@ -108,12 +108,13 @@ test('traverses 1001 source pools and rejects a later page failure without parti
   assert.equal(rows.at(-1)['Public Name Tag'], 'Published pool 1001 (V2)');
   await assert.rejects(run(pools, (x, n) => n === 3 ? { ...x, errors: ['page failed'] } : x), /incomplete or contains errors/);
 });
-test('a collision on the second page changes the first pages alias choice', async () => {
+test('shared names across pages retain every source pool', async () => {
   const pools = Array.from({ length: 1001 }, (_, i) => pool(i + 1));
   pools[0].name = 'Same official name'; pools[1000].name = 'Same official name';
   const rows = await run(pools);
-  assert.equal(rows[0]['Public Name Tag'], 'BPT1 (V2)');
-  assert.equal(rows.at(-1)['Public Name Tag'], 'BPT1001 (V2)');
+  assert.equal(rows[0]['Public Name Tag'], 'Same official name (V2)');
+  assert.equal(rows.at(-1)['Public Name Tag'], 'Same official name (V2)');
+  assert.equal(rows.length, 1001);
 });
 test('rejects malformed Graph errors instead of returning plausible partial data', async () => {
   for (const errors of [{ length: 0 }, null, ['unavailable']]) {
@@ -133,4 +134,16 @@ test('rejects mismatched IDs, control characters and duplicate addresses', async
 });
 test('rejects unsupported chains before any network read', async () => {
   await assert.rejects(run([], () => assert.fail('must not read'), '100'), /Unsupported Chain ID/);
+});
+
+test('a truncated long alias cannot collide with a different published short alias', async () => {
+  const long = 'x'.repeat(51), short = 'x'.repeat(42) + '...';
+  const rows = await run([pool(1, long), pool(2, short)]);
+  assert.deepEqual(rows.map(r => r['Public Name Tag']), ['BPT1 (V2)', 'BPT2 (V2)']);
+});
+test('a genuinely unrepresentable lossy pair is omitted without suppressing valid shared names', async () => {
+  const a = { ...pool(1, 'x'.repeat(51)), symbol: 'y'.repeat(51) };
+  const b = { ...pool(2, 'x'.repeat(50) + 'z'), symbol: 'y'.repeat(50) + 'z' };
+  const rows = await run([a, b, pool(3, 'Shared'), pool(4, 'Shared')]);
+  assert.deepEqual(rows.map(r => r['Contract Address']), [3, 4].map(n => 'eip155:146:' + pool(n).address));
 });

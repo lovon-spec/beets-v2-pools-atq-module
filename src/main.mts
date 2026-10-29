@@ -90,29 +90,27 @@ const service: ITagService = {
       return (chars.length > 45 ? chars.slice(0, 42).join("") + "..." : name) + " (V2)";
     };
     const key = (text: string): string => text.normalize("NFKC").toLowerCase();
-    // Check aliases of ALL source pools, including pools later omitted. A
-    // collision cannot be hidden by preferring a different label on its peer.
-    const owners = new Map<string, Set<string>>();
+    // Shared official names remain usable at different addresses (ATR 3).
+    // Only a LOSSY rendering that merges different official aliases needs a
+    // fallback: a generated ellipsis must not invent a shared official name.
+    const originals = new Map<string, Set<string>>();
     for (const pool of allPools) for (const raw of [pool.name, pool.symbol]) {
       const label = officialLabel(raw);
       if (label !== null) {
-        const addresses = owners.get(key(label)) ?? new Set<string>();
-        addresses.add(pool.address.toLowerCase()); owners.set(key(label), addresses);
+        const names = originals.get(key(label)) ?? new Set<string>();
+        names.add(key(raw.trim().replace(/\s+/gu, " "))); originals.set(key(label), names);
       }
     }
     const tags: ContractTag[] = [];
     for (const pool of allPools) {
-      // ATR requires official names and distinguishable instances. Use the
-      // published name first, or its official token symbol if only that alias
-      // differentiates it. If neither source alias can yield an unambiguous,
-      // markdown-free <=50-character label, skip this invalid-output subset
-      // under ATQ's explicit invalid-entry exception. Never invent an instance
-      // number or truncate the address to construct a new name.
-      // The raw symbol is also emitted in the note: markdown there makes
-      // this row invalid even if its name alone could supply a valid label.
+      // Preserve every pool with a usable published alias, including shared
+      // names. V2 differentiates the protocol version; full Pool ID and Vault
+      // registration identify the address in the note. No instance is invented.
+      // A markdown-bearing symbol is emitted in the note and would invalidate
+      // that entry; a row with no representable official alias is invalid too.
       if (markdown(pool.symbol)) continue;
       const label = [pool.name, pool.symbol].map(officialLabel).find(label =>
-        label !== null && owners.get(key(label))?.size === 1);
+        label !== null && originals.get(key(label))?.size === 1);
       if (!label) continue;
       const registration = BigInt("0x" + pool.id.slice(-20)).toString();
       const gyroscope = pool.poolType === "GyroE" || pool.poolType === "Gyro3" ? " Gyroscope" : "";
